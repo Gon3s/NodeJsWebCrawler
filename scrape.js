@@ -1,76 +1,130 @@
-function rec_crawl_url()
-{
-	// console.log(_url_traite);
+/**
+ * Gestion des dépendances
+ */
+ var request 	= require('request'),
+     cheerio 	= require('cheerio'),
+     md5 		= require('MD5'),
+     solr 	 	= require('solr-client'),
+     Iconv       = require('iconv').Iconv,
+     Buffer 		= require('buffer').Buffer
 
+/**
+ * Variables SOLR
+ */
+var HOST_SOLR = '127.0.0.1',
+    PORT_SOLR = '8983',
+    COL_SOLR = 'crawler';
+
+/**
+ * Object pour le crawl des URLs
+ * @param  args Les arguments (URL de départ)
+ */
+function Scrape(args)
+{
+	//== Création du client pour la connexion a Solr
+	this.clientSolr = solr.createClient(HOST_SOLR, PORT_SOLR, COL_SOLR);
+
+	//== Compte le nombre d'url traitée
+	this.compteur = 0;
+	//== Compte le nombre d'url à traiter
+	this.compteurRestant = 0;
+	//== Limite d'url à traiter
+	this.limitCrawl = 50;
+	//== Limite de profondeur d'url
+	this.limitProfondeur
+	//== Récupération de l'url de départ dans les arguments
+	this.urlBase = args[0],
+	//== Regexp pour tester les urls du domaine en fonction de l'url de départ
+	this.regUrl = new RegExp("^" + this.urlBase.replace(/[\-\[\]\/\{\}\(\)\*\+\?\.\\\^\$\|]/g, "\\$&") + ".*|\/.*");
+	//== Tableau qui contiendra les urls à traiter
+	this.urlTraite  = [{'url': this.urlBase, 'profondeur': 0}];
+	//== L'interval pour traiter les urls tous les timeInterval temps
+	this.interval;
+	//== L'interval de temps
+	this.timeInterval = 1000;
+	
+	//== Header du crawler envoyé
+	this.header = {
+	    'User-Agent': 'New Agent/0.0.1'
+	};
+	//== Options pour le request
+	this.option = {
+	    headers: this.header,
+	    encoding: 'binary'
+	};
+
+	//== On lance
+	this.init();
+}
+
+/**
+ * Initialisation du crawler
+ */
+Scrape.prototype.init = function()
+{
+	//== On vide la collection
+	this.clientSolr.deleteByQuery('*:*');
+
+	var that = this;
+
+	//== On démarre le crawl, 1 url toutes les secondes
+	this.interval = setInterval(function() { that.crawl.call(that); }, this.timeInterval);
+};
+
+/**
+ * Crawl une url
+ */
+Scrape.prototype.crawl = function()
+{
 	//== Si le tableau est vide on arrete
-	if(_url_traite.length === 0) 
+	if(this.urlTraite.length === 0) 
 	{
-		clearInterval(_interval);
+		this.stop();
 	}
 
 	//== On récupère la première url de la liste
-	var une_url = _url_traite.shift(),
+	var une_url = this.urlTraite.shift(),
 		url = une_url.url,
 		profondeur = une_url.profondeur,
 		infos = {};
 
 	console.log(une_url);
 
-	//== Si l'on a traiter l'url on ne fait rien
-	// if(_url_traite.indexOf(url) > -1) return false;
-
-	if(profondeur == 1 || ++_compteur == 20)
+	//== Si l'on a atteint l'une des deux limites
+	if(profondeur == this.limitProfondeur || ++this.compteur == this.limitCrawl)
 	{
-		clearInterval(_interval);
+		this.stop();
 	}	
-
-	//== Construction de la RegExp
-	var reg = new RegExp("^" + _url_base.replace(/[\-\[\]\/\{\}\(\)\*\+\?\.\\\^\$\|]/g, "\\$&") + ".*|\/.*");
-	
 
 	//== Si l'url n'appartient pas au domaine on ne la traite pas
 	//   On l'insert en tant qu'URL externe
-	if(reg.exec(url) === null)
+	if(this.regUrl.exec(url) === null)
 	{
 		infos.id = md5(url);
 		infos.url = url;
 		infos.date = new Date();
 		infos.typeUrl = 'externe';
 
-		_client.add(infos,function(err,obj){
-		   	if(err)
-		   	{
-		      	console.log(err);
-		   	}
-		   	else
-		   	{
-		      	_client.commit();
-		   	}
-		});
+		//== Enregistrement de l'url
+		this.addUrl(infos);
 
 		return false;
 	}
 
-	// Set the headers
-	var headers = {
-	    'User-Agent':       'New Agent/0.0.1'
-	}
+	//== Rajoute l'url dans les options du resquest
+	this.option.url = url;
 
-	// Configure the request
-	var options = {
-	    url: url,
-	    headers: headers,
-	    encoding: 'binary'
-	}
+	var that = this;
 
-	//== Sinon on peut accéder à la page
-	request(options, function(error, response, html) {
+	//== On accéde à la page
+	request(this.option, function(error, response, html) {
 
 		//== Si aucune erreur n'est retourné
-		//   et que la page renvoie un code 200
 		if(!error) 
 		{
+			//== Transforme le retour du request en Buffer
 			html = new Buffer(html, 'binary');
+			//== Si la page n'est pas en UTF-8 on la convertie
 			if(response.headers['content-type'].indexOf('UTF-8') == -1)
 			{
 			    iconv = new Iconv('ISO-8859-1', 'UTF8');
@@ -80,7 +134,7 @@ function rec_crawl_url()
 			//== On charge le html
 			var $ = cheerio.load(html);
 
-			//== Récupération du title
+			//== Récupération des infos de la page
 			infos.id = md5(url);
 			infos.url = url;
 			infos.date = new Date();
@@ -104,17 +158,10 @@ function rec_crawl_url()
 			$('h6').each(function() { infos.h6.push($(this).text().trim()); });
 			infos.nbUrl = $('a').length;
 
-			_client.add(infos, function(err,obj){
-			   	if(err)
-			   	{
-			      	console.log(err);
-			   	}
-			   	else
-			   	{
-			      	_client.commit();
-			   	}
-			});
+			//== On enregistre l'url
+			that.addUrl(infos);
 
+			//== On atteind une profondeur +1
 			++profondeur;
 
 			//== Pour chaque lien de la page
@@ -123,10 +170,13 @@ function rec_crawl_url()
 				//== On récupère l'URL
 				var $a = $(this), aUrl = $a.attr('href');
 
-				if(url == aUrl) return true;
+				//== Si c'est la même url qu'en cours on ne l'ajoute pas
+				//   Ou quelle est en noIndex
+				//   Ou code de retour différent de 200 (OK), 301 (redirection)
+				if(url == aUrl || infos.noindex || infos.httpCode != 200 || infos.httpCode != 301) return true;
 
 				//== On ajoute l'url avec un profondeur + 1
-				_url_traite.push({'url': aUrl, 'profondeur': profondeur});
+				that.urlTraite.push({'url': aUrl, 'profondeur': profondeur});
 			});
 		}
 		else
@@ -135,39 +185,41 @@ function rec_crawl_url()
 			return false;
 		}
 	});
-	
-	return true;
-}
+};
 
+/**
+ * Fonction qui ajoute une url
+ * @param infos Tableau contenant les informations à ajouter
+ */
+Scrape.prototype.addUrl = function(infos)
+{
+	this.clientSolr.add(infos, function(err, obj) {
+	   	if(err)
+	   	{
+	      	console.log(err);
+	      	this.stop();
+	   	}
+	});
+};
+
+/**
+ * Stop le process
+ */
+Scrape.prototype.stop = function()
+{
+	clearInterval(this.interval);
+	this.clientSolr.commit();
+};
+
+//== Récupération des arguments
 var myArgs = process.argv.slice(2);
 
+//== Si l'on a pas passé d'arguments on renvoie une erreur
 if(myArgs[0] === undefined)
 {
 	console.log('Url obligatoire');
 	process.exit(0);
 }
 
-var request 	= require('request'),
-    cheerio 	= require('cheerio'),
-    md5 		= require('MD5'),
-    solr 	 	= require('solr-client'),
-    Iconv       = require('iconv').Iconv,
-    Buffer 		= require('buffer').Buffer,
-
-    _client = solr.createClient('127.0.0.1', '8983', 'crawler'),
-
-	_compteur    = 0,
-	_limit_crawl = 50,
-	_url_base    = myArgs[0],
-	_url_traite  = [{'url': _url_base, 'profondeur': 0}],
-	_infos  = [];
-
-_client.deleteByQuery('*:*', function(err,obj){
-   if(err){
-   	console.log(err);
-   }else{
-   	_client.commit();
-   }
-});
-
-var _interval = setInterval(rec_crawl_url, 1000);
+//== On créer notre crawler
+new Scrape(myArgs);
